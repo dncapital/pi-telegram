@@ -3247,63 +3247,6 @@ async function handleFollowerApiCall(
   }
 }
 
-export interface TelegramBusLeaderActivationSchedulerDeps<TContext> {
-  isBusEnabled: () => boolean;
-  ownsPolling: (ctx: TContext) => boolean;
-  isBusPollingStarted: () => boolean;
-  setBusPollingStarted: (started: boolean) => void;
-  stopClassicPolling: () => Promise<void>;
-  startClassicPolling: (ctx: TContext) => void | Promise<void>;
-  startBusLeaderPolling: (ctx: TContext) => Promise<void>;
-  updateStatus: (ctx: TContext) => void;
-  recordRuntimeEvent?: (
-    category: string,
-    error: unknown,
-    details?: Record<string, unknown>,
-  ) => void;
-}
-
-export function createTelegramBusLeaderActivationScheduler<TContext>(
-  deps: TelegramBusLeaderActivationSchedulerDeps<TContext>,
-): (ctx: TContext) => void {
-  let pending = false;
-  return (ctx) => {
-    if (deps.isBusPollingStarted() || pending) return;
-    if (!deps.isBusEnabled()) return;
-    if (!deps.ownsPolling(ctx)) return;
-    pending = true;
-    const timer = setTimeout(() => {
-      void (async () => {
-        try {
-          if (deps.isBusPollingStarted()) return;
-          if (!deps.isBusEnabled()) return;
-          if (!deps.ownsPolling(ctx)) return;
-          await deps.stopClassicPolling();
-          try {
-            await deps.startBusLeaderPolling(ctx);
-            deps.setBusPollingStarted(true);
-            deps.updateStatus(ctx);
-            deps.recordRuntimeEvent?.(
-              "bus",
-              "Telegram bus leader mode activated",
-              { phase: "leader-hot-switch" },
-            );
-          } catch (error) {
-            deps.recordRuntimeEvent?.("bus", error, {
-              phase: "leader-hot-switch",
-            });
-            deps.setBusPollingStarted(false);
-            await deps.startClassicPolling(ctx);
-          }
-        } finally {
-          pending = false;
-        }
-      })();
-    }, 0);
-    timer.unref?.();
-  };
-}
-
 export function createTelegramBusLeaderRuntime<TContext>(
   deps: TelegramBusLeaderRuntimeDeps<TContext>,
 ): TelegramBusLeaderRuntime<TContext> {

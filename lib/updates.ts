@@ -134,30 +134,6 @@ function getTelegramReactionEmoji(
   return candidates.find((emoji) => emojis.has(emoji));
 }
 
-export function getTelegramQueueReactionDisposition(
-  reactions: TelegramReactionType[],
-): TelegramQueueReactionDisposition {
-  const emojis = collectTelegramReactionEmojis(reactions);
-  const suppressionEmoji = getTelegramReactionEmoji(
-    emojis,
-    TELEGRAM_REMOVAL_REACTION_EMOJIS,
-  );
-  const priorityEmoji = getTelegramReactionEmoji(
-    emojis,
-    TELEGRAM_PRIORITY_REACTION_EMOJIS,
-  );
-  if (suppressionEmoji && priorityEmoji) {
-    return {
-      kind: "priority-suppressed",
-      priorityEmoji,
-      suppressionEmoji,
-    };
-  }
-  if (suppressionEmoji) return { kind: "suppressed", emoji: suppressionEmoji };
-  if (priorityEmoji) return { kind: "priority", emoji: priorityEmoji };
-  return { kind: "default" };
-}
-
 function getTelegramQueueReactionTransition(
   oldReactions: TelegramReactionType[],
   newReactions: TelegramReactionType[],

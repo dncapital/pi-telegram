@@ -518,17 +518,6 @@ export async function sendTelegramView(view, options) {
         return invalid;
     return runDeliveryOperation((runtime) => runtime.sendView(view, options));
 }
-/** @internal Edit an exact Telegram message through the currently bound runtime generation. */
-export async function editTelegramTargetView(target, messageId, view) {
-    const invalid = validateView(view);
-    if (invalid)
-        return invalid;
-    return runDeliveryOperation((runtime) => runtime.editView({
-        target: { ...target },
-        messageIds: [messageId],
-        generation: runtime.generation,
-    }, view));
-}
 export async function editTelegramView(handle, view) {
     const invalid = validateView(view);
     if (invalid)

@@ -14,7 +14,6 @@ import {
   createTelegramDeliveryTargetPolicyRuntime,
   createTelegramDeliveryRuntime as createConcreteDeliveryRuntime,
   deleteTelegramView,
-  editTelegramTargetView,
   editTelegramView,
   isTelegramDeliveryExplicitTargetAuthorized,
   resolveTelegramDeliveryAggregateTarget,
@@ -88,12 +87,11 @@ test("Delivery API delegates operations to the current runtime", async () => {
   );
   assert.equal(sent.ok, true);
   await editTelegramView(handle("one"), { text: "updated" });
-  await editTelegramTargetView(target, 11, { text: "result" });
   await deleteTelegramView(handle("one"));
   await sendTelegramChatAction("typing", {
     scope: { kind: "aggregate" },
   });
-  assert.deepEqual(calls, ["send", "edit", "edit", "delete", "action:typing"]);
+  assert.deepEqual(calls, ["send", "edit", "delete", "action:typing"]);
 });
 
 test("Delivery API rejects empty views before transport", async () => {

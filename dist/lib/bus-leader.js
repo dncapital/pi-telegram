@@ -2379,48 +2379,6 @@ async function handleFollowerApiCall(envelope, deps) {
         };
     }
 }
-export function createTelegramBusLeaderActivationScheduler(deps) {
-    let pending = false;
-    return (ctx) => {
-        if (deps.isBusPollingStarted() || pending)
-            return;
-        if (!deps.isBusEnabled())
-            return;
-        if (!deps.ownsPolling(ctx))
-            return;
-        pending = true;
-        const timer = setTimeout(() => {
-            void (async () => {
-                try {
-                    if (deps.isBusPollingStarted())
-                        return;
-                    if (!deps.isBusEnabled())
-                        return;
-                    if (!deps.ownsPolling(ctx))
-                        return;
-                    await deps.stopClassicPolling();
-                    try {
-                        await deps.startBusLeaderPolling(ctx);
-                        deps.setBusPollingStarted(true);
-                        deps.updateStatus(ctx);
-                        deps.recordRuntimeEvent?.("bus", "Telegram bus leader mode activated", { phase: "leader-hot-switch" });
-                    }
-                    catch (error) {
-                        deps.recordRuntimeEvent?.("bus", error, {
-                            phase: "leader-hot-switch",
-                        });
-                        deps.setBusPollingStarted(false);
-                        await deps.startClassicPolling(ctx);
-                    }
-                }
-                finally {
-                    pending = false;
-                }
-            })();
-        }, 0);
-        timer.unref?.();
-    };
-}
 export function createTelegramBusLeaderRuntime(deps) {
     const getNowMs = deps.getNowMs ?? Date.now;
     const followerPruneIntervalMs = deps.followerPruneIntervalMs ?? 1000;

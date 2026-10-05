@@ -344,17 +344,5 @@ export declare function createTelegramBusLeaderEnvelopeHandler(deps: {
     runWorkspaceAdmission?: TelegramBusWorkspaceAdmissionRunner;
     runWithWorkspaceCapacity?: TelegramWorkspaceCapacityRunner;
 }): (envelope: TelegramBusEnvelope) => Promise<TelegramBusEnvelope> | TelegramBusEnvelope;
-export interface TelegramBusLeaderActivationSchedulerDeps<TContext> {
-    isBusEnabled: () => boolean;
-    ownsPolling: (ctx: TContext) => boolean;
-    isBusPollingStarted: () => boolean;
-    setBusPollingStarted: (started: boolean) => void;
-    stopClassicPolling: () => Promise<void>;
-    startClassicPolling: (ctx: TContext) => void | Promise<void>;
-    startBusLeaderPolling: (ctx: TContext) => Promise<void>;
-    updateStatus: (ctx: TContext) => void;
-    recordRuntimeEvent?: (category: string, error: unknown, details?: Record<string, unknown>) => void;
-}
-export declare function createTelegramBusLeaderActivationScheduler<TContext>(deps: TelegramBusLeaderActivationSchedulerDeps<TContext>): (ctx: TContext) => void;
 export declare function createTelegramBusLeaderRuntime<TContext>(deps: TelegramBusLeaderRuntimeDeps<TContext>): TelegramBusLeaderRuntime<TContext>;
 export {};

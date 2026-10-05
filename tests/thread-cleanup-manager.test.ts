@@ -17,7 +17,7 @@ import { captureTelegramInactiveThreadCleanupEvidence,
   createTelegramInactiveThreadCleanupReviewRuntime,
   createTelegramInactiveThreadCleanupSettingsPort,
   createTelegramThreadCleanupPermitRuntime,
-  createTelegramThreadCleanupWorkStore, executeTelegramInactiveThreadCleanup,
+  createTelegramThreadCleanupWorkStore,
   planTelegramInactiveThreadCleanup } from "../lib/thread-cleanup-manager.ts";
 import { createTelegramWorkspaceAdmissionLedger } from "../lib/workspace-admission.ts";
 
@@ -174,6 +174,53 @@ test("Cleanup permit runtime revalidates after fence and retains commit-ready st
     assert.equal((await wrongProfile.acquire(candidate, "thread-cleanup:profile")).kind, "blocked");
     assert.equal(ledger.read().fence, undefined);
   } finally { await rm(dir, { recursive: true, force: true }); }
+});
+
+test("Hidden cleanup coordinator refuses missing bindings, failed revalidation, and issued permits without transport", async () => {
+  for (const scenario of ["missing-binding", "failed-revalidation", "already-issued"] as const) {
+    const dir = await mkdtemp(join(tmpdir(), "pi-telegram-thread-cleanup-refusal-"));
+    try {
+      const operationId = `thread-cleanup:${"f".repeat(32)}`;
+      const candidate = planTelegramInactiveThreadCleanup({
+        profileName: "work", bindings: [binding], protection: [clear],
+      })[0]!;
+      const store = createTelegramThreadCleanupWorkStore({ path: join(dir, "work.json"),
+        profileName: "work", tokenSha256: "a".repeat(64), getNowMs: () => 100 });
+      const prepared = store.prepare(operationId, [candidate]).workSet;
+      const ledger = createTelegramWorkspaceAdmissionLedger({ path: join(dir, "ledger.json"),
+        profileKey: "work", owner: cleanupOwner, getNowMs: () => 100 });
+      const calls: string[] = [];
+      const permitRuntime = createTelegramThreadCleanupPermitRuntime({ ledger,
+        getLeaderEpoch: () => 4, getProfileName: () => "work", getOwner: () => cleanupOwner,
+        canAdoptFence: () => false, getNowMs: () => 100,
+        async revalidateUnderFence() {
+          calls.push("revalidate");
+          assert.equal(ledger.read().fence?.phase, "fenced");
+          return scenario !== "failed-revalidation";
+        } });
+      if (scenario === "already-issued") {
+        assert.equal((await permitRuntime.acquire(candidate, operationId)).kind, "issued");
+        assert.equal(ledger.read().fence?.phase, "deletion-issued");
+      }
+      const retainedLedger = ledger.read();
+      const result = await cleanReviewedInactiveThreads({ store, operationId, permitRuntime,
+        async resolveFullBinding() {
+          calls.push("resolve");
+          return scenario === "missing-binding" ? undefined : binding;
+        },
+        async deleteWithPermit() { calls.push("delete"); },
+        async commitBinding() { calls.push("commit"); return true; },
+      });
+      assert.deepEqual(result, scenario === "already-issued"
+        ? { deleted: 0, outcomeUnknown: 1, blocked: 0, recovery: "deletion-outcome-unknown" }
+        : { deleted: 0, outcomeUnknown: 0, blocked: 1 }, scenario);
+      assert.deepEqual(calls, scenario === "missing-binding" ? ["resolve"]
+        : scenario === "failed-revalidation" ? ["resolve", "revalidate"]
+        : ["revalidate", "resolve"], scenario);
+      assert.deepEqual(store.list(), [prepared], scenario);
+      assert.deepEqual(ledger.read(), retainedLedger, scenario);
+    } finally { await rm(dir, { recursive: true, force: true }); }
+  }
 });
 
 test("Hidden cleanup coordinator calls fake deletion once and never replays ambiguity", async () => {
@@ -378,96 +425,6 @@ test("Cleanup work-set records one exact deletion permit across restart", async 
     await rm(path);
     await symlink("/etc/passwd", path);
     assert.throws(() => restarted.list(), /bounded private regular file/u);
-  } finally { await rm(dir, { recursive: true, force: true }); }
-});
-
-test("Cleanup execution revalidates and consumes one permit inside admission", async () => {
-  const dir = await mkdtemp(join(tmpdir(), "pi-telegram-thread-cleanup-execute-"));
-  const path = join(dir, "cleanup.json");
-  try {
-    const candidate = planTelegramInactiveThreadCleanup({
-      profileName: "work", bindings: [binding], protection: [clear],
-    })[0]!;
-    const store = createTelegramThreadCleanupWorkStore({ path, profileName: "work",
-      tokenSha256: "a".repeat(64) });
-    store.prepare("execute", [candidate]);
-    const events: string[] = [];
-    const result = await executeTelegramInactiveThreadCleanup({
-      store, operationId: "execute", bindingKey: "binding:a",
-      async withWorkspaceDeletionBoundary(operation) {
-        events.push("boundary:start");
-        try { return await operation(); } finally { events.push("boundary:end"); }
-      },
-      async loadFreshEvidence() {
-        events.push("evidence");
-        return { profileName: "work", bindings: [binding], protection: [clear] };
-      },
-      async acquireDeletionPermit() {
-        events.push("permit");
-        return { kind: "issued", permit: { destructiveKind: "manual-thread-cleanup" as const,
-          operationId: "permit", retirementIntentId: "execute",
-          profileKey: "work", bindingKey: "binding:a", slot: "A", target: binding.target,
-          leaderEpoch: 1, issuedAtMs: Date.now() } };
-      },
-      async deleteWithPermit() { events.push("delete"); },
-    });
-    assert.equal(result.status, "deleted");
-    assert.deepEqual(events, ["boundary:start", "evidence", "permit", "delete", "boundary:end"]);
-    const replay = await executeTelegramInactiveThreadCleanup({
-      store, operationId: "execute", bindingKey: "binding:a",
-      async withWorkspaceDeletionBoundary(operation) { return operation(); },
-      async loadFreshEvidence() { throw new Error("must not revalidate deleted work"); },
-      async acquireDeletionPermit() { throw new Error("must not reacquire permit"); },
-      async deleteWithPermit() { throw new Error("must not replay delete"); },
-    });
-    assert.equal(replay.status, "deleted");
-
-    store.prepare("ambiguous", [candidate]);
-    let deletes = 0;
-    const ambiguousInput = {
-      store, operationId: "ambiguous", bindingKey: "binding:a",
-      async withWorkspaceDeletionBoundary<T>(operation: () => Promise<T>) { return operation(); },
-      async loadFreshEvidence() {
-        return { profileName: "work", bindings: [binding], protection: [clear] };
-      },
-      async acquireDeletionPermit() {
-        return { kind: "issued" as const, permit: { destructiveKind: "manual-thread-cleanup" as const,
-          operationId: "permit-2", retirementIntentId: "ambiguous", profileKey: "work", bindingKey: "binding:a",
-          slot: "A", target: binding.target, leaderEpoch: 1, issuedAtMs: Date.now() } };
-      },
-      async deleteWithPermit() { deletes += 1; throw new Error("lost delete response"); },
-    };
-    await assert.rejects(executeTelegramInactiveThreadCleanup(ambiguousInput));
-    assert.equal((await executeTelegramInactiveThreadCleanup(ambiguousInput)).status, "outcome-unknown");
-    assert.equal(deletes, 1);
-
-    store.prepare("drift", [candidate]);
-    let permitCalls = 0;
-    const drift = await executeTelegramInactiveThreadCleanup({
-      store, operationId: "drift", bindingKey: "binding:a",
-      async withWorkspaceDeletionBoundary(operation) { return operation(); },
-      async loadFreshEvidence() {
-        return { profileName: "work", bindings: [{ ...binding, updatedAtMs: 21 }], protection: [clear] };
-      },
-      async acquireDeletionPermit() { permitCalls += 1; return { kind: "blocked" as const }; },
-      async deleteWithPermit() { throw new Error("must not delete drifted binding"); },
-    });
-    assert.equal(drift.status, "blocked");
-    assert.equal(permitCalls, 0);
-
-    store.prepare("already-issued", [candidate]);
-    const issued = await executeTelegramInactiveThreadCleanup({
-      store, operationId: "already-issued", bindingKey: "binding:a",
-      async withWorkspaceDeletionBoundary(operation) { return operation(); },
-      async loadFreshEvidence() {
-        return { profileName: "work", bindings: [binding], protection: [clear] };
-      },
-      async acquireDeletionPermit() { return { kind: "already-issued" as const }; },
-      async deleteWithPermit() { throw new Error("must not replay an issued permit"); },
-    });
-    assert.equal(issued.status, "blocked");
-    assert.equal(store.list().find(workSet => workSet.operationId === "already-issued")
-      ?.entries[0]?.state, "prepared");
   } finally { await rm(dir, { recursive: true, force: true }); }
 });
 

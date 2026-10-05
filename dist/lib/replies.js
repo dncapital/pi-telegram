@@ -15,20 +15,6 @@ export function renderTelegramMarkdownToHtmlDraft(markdown) {
 }
 export const TELEGRAM_RICH_MESSAGE_MAX_CHARS = 32768;
 export const TELEGRAM_RICH_MESSAGE_MAX_BLOCKS = 500;
-export function createReplyDedupRuntime() {
-    const replied = new Map();
-    return {
-        shouldReply(promptMessageId) {
-            if (replied.has(promptMessageId))
-                return false;
-            replied.set(promptMessageId, true);
-            return true;
-        },
-        reset() {
-            replied.clear();
-        },
-    };
-}
 // --- Transport-level dedup ---
 const lastRepliedToMessageIdByTarget = new Map();
 const replyDedupPreservedOnNextReset = new Map();
@@ -563,17 +549,6 @@ export function createTelegramRenderedMessageRuntime(deps) {
             recordOwnership: deps.recordOwnership,
             sendRichMessage: deps.sendRichMessage,
         }, options),
-    };
-}
-// --- Dedup-wrapped Reply Wrappers ---
-/** Wrap a sendTextReply with reply dedup so only the first message
- *  in a turn carries reply metadata. */
-export function dedupSendTextReply(dedup, inner) {
-    return async (chatId, replyToMessageId, text, options) => {
-        const effectiveReplyTo = dedup.shouldReply(replyToMessageId)
-            ? replyToMessageId
-            : undefined;
-        return inner(chatId, effectiveReplyTo, text, options);
     };
 }
 /**
