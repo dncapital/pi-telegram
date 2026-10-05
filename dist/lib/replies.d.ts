@@ -10,18 +10,6 @@ export { renderTelegramMessage, type TelegramRenderedChunk, type TelegramRenderM
 export declare function renderTelegramMarkdownToHtmlDraft(markdown: string): string;
 export declare const TELEGRAM_RICH_MESSAGE_MAX_CHARS = 32768;
 export declare const TELEGRAM_RICH_MESSAGE_MAX_BLOCKS = 500;
-/** Non-persistent reply deduplication for a single agent turn.
- *  First reply to a prompt gets `reply_parameters.message_id`;
- *  subsequent replies in the same turn skip it to avoid stacking
- *  duplicate reply headers in the chat viewport. */
-export interface ReplyDedupRuntime {
-    /** Returns true if this is the first reply for the given prompt
-     *  message id in the current turn. Side-effect: marks it replied. */
-    shouldReply(promptMessageId: number): boolean;
-    /** Reset the tracker when a new prompt enters the queue. */
-    reset(): void;
-}
-export declare function createReplyDedupRuntime(): ReplyDedupRuntime;
 export declare function resetTransportReplyDedup(): void;
 /** Keeps a successfully published transition notice as the first reply of the
  * next agent turn. The following agent-start reset consumes this one-shot
@@ -152,9 +140,6 @@ export interface TelegramRenderedMessageDeliveryRuntimeDeps<TReplyMarkup> extend
 }
 export declare function createTelegramRenderedMessageDeliveryRuntime<TReplyMarkup>(deps: TelegramRenderedMessageDeliveryRuntimeDeps<TReplyMarkup>): TelegramRenderedMessageDeliveryRuntime<TReplyMarkup>;
 export declare function createTelegramRenderedMessageRuntime<TReplyMarkup>(deps: TelegramRenderedMessageRuntimeDeps<TReplyMarkup>): TelegramRenderedMessageRuntime<TReplyMarkup>;
-/** Wrap a sendTextReply with reply dedup so only the first message
- *  in a turn carries reply metadata. */
-export declare function dedupSendTextReply(dedup: ReplyDedupRuntime, inner: (chatId: number, replyToMessageId: number | undefined, text: string, options?: TelegramTextReplyOptions) => Promise<number | undefined>): (chatId: number, replyToMessageId: number, text: string, options?: TelegramTextReplyOptions) => Promise<number | undefined>;
 /**
  * Guest reply sender: answers guest queries with native Rich Markdown content.
  * Guest queries use InlineQueryResult input_message_content rather than chat

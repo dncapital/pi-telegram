@@ -594,16 +594,6 @@ export function createTelegramMessageActivityTypingHooks<
   };
 }
 
-export function createDedupAgentStartHook(
-  dedup: { reset(): void },
-  inner: (event: AgentStartEvent, ctx: ExtensionContext) => Promise<void>,
-): (event: AgentStartEvent, ctx: ExtensionContext) => Promise<void> {
-  return async (event, ctx) => {
-    dedup.reset();
-    await inner(event, ctx);
-  };
-}
-
 export interface TelegramExtraLifecycleHooks {
   onSessionStart?: (
     event: SessionStartEvent,

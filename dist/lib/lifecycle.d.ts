@@ -147,9 +147,6 @@ export interface TelegramMessageActivityTypingDeps<TContext> {
     recordRuntimeEvent?: (category: string, error: unknown, details?: Record<string, unknown>) => void;
 }
 export declare function createTelegramMessageActivityTypingHooks<TContext extends ExtensionContext>(deps: TelegramMessageActivityTypingDeps<TContext>): Pick<TelegramLifecycleRegistrationDeps, "onMessageStart" | "onMessageUpdate">;
-export declare function createDedupAgentStartHook(dedup: {
-    reset(): void;
-}, inner: (event: AgentStartEvent, ctx: ExtensionContext) => Promise<void>): (event: AgentStartEvent, ctx: ExtensionContext) => Promise<void>;
 export interface TelegramExtraLifecycleHooks {
     onSessionStart?: (event: SessionStartEvent, ctx: ExtensionContext) => Promise<void>;
     onSessionShutdown?: (event: SessionShutdownEvent, ctx: ExtensionContext) => Promise<void>;

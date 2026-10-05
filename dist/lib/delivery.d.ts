@@ -156,8 +156,6 @@ export declare function clearTelegramDeliveryRuntime(): void;
 /** @internal */
 export declare function isTelegramDeliveryHandleCurrent(handle: TelegramDeliveryHandle): boolean;
 export declare function sendTelegramView(view: TelegramDeliveryView, options: SendTelegramViewOptions): Promise<TelegramDeliveryResult<TelegramDeliveryHandle>>;
-/** @internal Edit an exact Telegram message through the currently bound runtime generation. */
-export declare function editTelegramTargetView(target: TelegramDeliveryTarget, messageId: number, view: TelegramDeliveryView): Promise<TelegramDeliveryResult<TelegramDeliveryHandle>>;
 export declare function editTelegramView(handle: TelegramDeliveryHandle, view: TelegramDeliveryView): Promise<TelegramDeliveryResult<TelegramDeliveryHandle>>;
 export declare function deleteTelegramView(handle: TelegramDeliveryHandle): Promise<TelegramDeliveryResult<void>>;
 export declare function sendTelegramChatAction(action: TelegramDeliveryChatAction, options: {

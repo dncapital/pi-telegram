@@ -186,23 +186,6 @@ export declare function commitTelegramInactiveThreadCleanup(input: {
     bindingKey: string;
     commitBinding(): Promise<boolean>;
 }): Promise<boolean>;
-export declare function executeTelegramInactiveThreadCleanup(input: {
-    store: TelegramThreadCleanupWorkStore;
-    operationId: string;
-    bindingKey: string;
-    withWorkspaceDeletionBoundary<T>(operation: () => Promise<T>): Promise<T>;
-    loadFreshEvidence(): Promise<Parameters<typeof planTelegramInactiveThreadCleanup>[0]>;
-    acquireDeletionPermit(candidate: TelegramThreadCleanupCandidate): Promise<{
-        kind: "issued";
-        permit: TelegramThreadCleanupDeletionPermit;
-    } | {
-        kind: "blocked" | "already-issued";
-    }>;
-    deleteWithPermit(permit: TelegramThreadCleanupDeletionPermit, candidate: TelegramThreadCleanupCandidate): Promise<void>;
-}): Promise<{
-    status: "deleted" | "blocked" | "outcome-unknown";
-    entry?: TelegramThreadCleanupWorkEntry;
-}>;
 export declare function createTelegramThreadCleanupPermitRuntime(deps: {
     ledger: {
         read(): {

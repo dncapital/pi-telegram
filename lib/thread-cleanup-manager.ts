@@ -453,45 +453,6 @@ export async function commitTelegramInactiveThreadCleanup(input: {
   return true;
 }
 
-export async function executeTelegramInactiveThreadCleanup(input: {
-  store: TelegramThreadCleanupWorkStore;
-  operationId: string;
-  bindingKey: string;
-  withWorkspaceDeletionBoundary<T>(operation: () => Promise<T>): Promise<T>;
-  loadFreshEvidence(): Promise<Parameters<typeof planTelegramInactiveThreadCleanup>[0]>;
-  acquireDeletionPermit(candidate: TelegramThreadCleanupCandidate): Promise<
-    | { kind: "issued"; permit: TelegramThreadCleanupDeletionPermit }
-    | { kind: "blocked" | "already-issued" }
-  >;
-  deleteWithPermit(permit: TelegramThreadCleanupDeletionPermit,
-    candidate: TelegramThreadCleanupCandidate): Promise<void>;
-}): Promise<{ status: "deleted" | "blocked" | "outcome-unknown";
-  entry?: TelegramThreadCleanupWorkEntry }> {
-  return input.withWorkspaceDeletionBoundary(async () => {
-    const workSet = input.store.list().find(candidate => candidate.operationId === input.operationId);
-    const retained = workSet?.entries.find(candidate => candidate.bindingKey === input.bindingKey);
-    if (!retained) return { status: "blocked" };
-    if (retained.state === "deleted") return { status: "deleted", entry: retained };
-    if (retained.state === "outcome-unknown") return { status: "outcome-unknown", entry: retained };
-    const planned = planTelegramInactiveThreadCleanup(await input.loadFreshEvidence());
-    const fresh = planned.find(candidate => candidate.bindingKey === retained.bindingKey);
-    const retainedCandidate = (({ state: _state, updatedAtMs: _updated, issuedAtMs: _issued,
-      permitOperationId: _permitOperation, permitIntentId: _permitIntent,
-      permitLeaderEpoch: _permitEpoch, deletedAtMs: _deleted, ...candidate }) => candidate)(retained);
-    if (!fresh || !sameCandidates([fresh], [retainedCandidate])) return { status: "blocked" };
-    const permitResult = await input.acquireDeletionPermit(fresh);
-    if (permitResult.kind !== "issued") return { status: "blocked" };
-    const recorded = input.store.recordDeletionIssued({ operationId: input.operationId,
-      bindingKey: input.bindingKey, bindingUpdatedAtMs: retained.bindingUpdatedAtMs,
-      permit: permitResult.permit });
-    if (!recorded.recorded) return { status: "outcome-unknown", entry: recorded.entry };
-    await input.deleteWithPermit(permitResult.permit, fresh);
-    const confirmed = input.store.confirmDeleted({ operationId: input.operationId,
-      bindingKey: input.bindingKey });
-    return { status: "deleted", entry: confirmed.entry };
-  });
-}
-
 export function createTelegramThreadCleanupPermitRuntime(deps: {
   ledger: {
     read(): { fence?: TelegramWorkspaceDestructiveFence };

@@ -297,12 +297,6 @@ export function createTelegramMessageActivityTypingHooks(deps) {
         onMessageUpdate: (event, ctx) => handleMessageActivity("update", event, ctx, deps.onMessageUpdate),
     };
 }
-export function createDedupAgentStartHook(dedup, inner) {
-    return async (event, ctx) => {
-        dedup.reset();
-        await inner(event, ctx);
-    };
-}
 export function appendTelegramLifecycleHooks(base, extra, isSessionActive) {
     return {
         onSessionStart: async (event, ctx) => {

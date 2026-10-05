@@ -68,7 +68,6 @@ export interface TelegramUpdateDeletion {
 }
 export declare function normalizeTelegramReactionEmoji(emoji: string): string;
 export declare function collectTelegramReactionEmojis(reactions: TelegramReactionType[]): Set<string>;
-export declare function getTelegramQueueReactionDisposition(reactions: TelegramReactionType[]): TelegramQueueReactionDisposition;
 export declare function extractDeletedTelegramMessageIds(update: TelegramUpdateDeletion): number[];
 export interface TelegramUser {
     id: number;

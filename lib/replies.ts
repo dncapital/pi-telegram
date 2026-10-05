@@ -37,34 +37,6 @@ export function renderTelegramMarkdownToHtmlDraft(markdown: string): string {
 export const TELEGRAM_RICH_MESSAGE_MAX_CHARS = 32768;
 export const TELEGRAM_RICH_MESSAGE_MAX_BLOCKS = 500;
 
-// --- Reply Dedup ---
-
-/** Non-persistent reply deduplication for a single agent turn.
- *  First reply to a prompt gets `reply_parameters.message_id`;
- *  subsequent replies in the same turn skip it to avoid stacking
- *  duplicate reply headers in the chat viewport. */
-export interface ReplyDedupRuntime {
-  /** Returns true if this is the first reply for the given prompt
-   *  message id in the current turn. Side-effect: marks it replied. */
-  shouldReply(promptMessageId: number): boolean;
-  /** Reset the tracker when a new prompt enters the queue. */
-  reset(): void;
-}
-
-export function createReplyDedupRuntime(): ReplyDedupRuntime {
-  const replied = new Map<number, boolean>();
-  return {
-    shouldReply(promptMessageId: number): boolean {
-      if (replied.has(promptMessageId)) return false;
-      replied.set(promptMessageId, true);
-      return true;
-    },
-    reset(): void {
-      replied.clear();
-    },
-  };
-}
-
 // --- Transport-level dedup ---
 
 const lastRepliedToMessageIdByTarget = new Map<string, number>();
@@ -939,32 +911,6 @@ export function createTelegramRenderedMessageRuntime<TReplyMarkup>(
         recordOwnership: deps.recordOwnership,
         sendRichMessage: deps.sendRichMessage,
       }, options),
-  };
-}
-
-// --- Dedup-wrapped Reply Wrappers ---
-
-/** Wrap a sendTextReply with reply dedup so only the first message
- *  in a turn carries reply metadata. */
-export function dedupSendTextReply(
-  dedup: ReplyDedupRuntime,
-  inner: (
-    chatId: number,
-    replyToMessageId: number | undefined,
-    text: string,
-    options?: TelegramTextReplyOptions,
-  ) => Promise<number | undefined>,
-): (
-  chatId: number,
-  replyToMessageId: number,
-  text: string,
-  options?: TelegramTextReplyOptions,
-) => Promise<number | undefined> {
-  return async (chatId, replyToMessageId, text, options) => {
-    const effectiveReplyTo = dedup.shouldReply(replyToMessageId)
-      ? replyToMessageId
-      : undefined;
-    return inner(chatId, effectiveReplyTo, text, options);
   };
 }
 

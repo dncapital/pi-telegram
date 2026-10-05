@@ -32,7 +32,6 @@ import {
   createTelegramBusFollowerSessionReplacementAuthority,
   createTelegramBusFollowerTargetProvisioner,
   createTelegramBusInstanceLifecycleAnnouncement,
-  createTelegramBusLeaderActivationScheduler,
   createTelegramBusLeaderApiProxy,
   createTelegramBusLeaderEnvelopeHandler as createRawTelegramBusLeaderEnvelopeHandler,
   createTelegramBusLeaderRuntime as createRawTelegramBusLeaderRuntime,
@@ -2427,46 +2426,6 @@ test("Bus leader builds connected lifecycle announcements with thread name befor
       parseMode: "HTML",
     },
   );
-});
-
-test("Bus leader activation scheduler hot-switches an owning classic poller", async () => {
-  const events: string[] = [];
-  let busStarted = false;
-  const schedule = createTelegramBusLeaderActivationScheduler<{ cwd: string }>({
-    isBusEnabled: () => true,
-    ownsPolling: () => true,
-    isBusPollingStarted: () => busStarted,
-    setBusPollingStarted: (started) => {
-      busStarted = started;
-      events.push(`bus:${started}`);
-    },
-    stopClassicPolling: async () => {
-      events.push("classic:stop");
-    },
-    startClassicPolling: async () => {
-      events.push("classic:start");
-    },
-    startBusLeaderPolling: async (ctx) => {
-      events.push(`leader:start:${ctx.cwd}`);
-    },
-    updateStatus: () => {
-      events.push("status");
-    },
-    recordRuntimeEvent: (category, error, details) => {
-      events.push(`${category}:${details?.phase}:${String(error)}`);
-    },
-  });
-
-  schedule({ cwd: "/repo" });
-  await waitForCondition(() => busStarted);
-
-  assert.deepEqual(events, [
-    "classic:stop",
-    "leader:start:/repo",
-    "bus:true",
-    "status",
-    "bus:leader-hot-switch:Telegram bus leader mode activated",
-  ]);
 });
 
 test("Bus leader routes authenticated queue handoff between exact follower generations", async () => {
