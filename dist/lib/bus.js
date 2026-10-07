@@ -75,6 +75,20 @@ export function getTelegramProcessLiveness(owner, options = {}) {
         return "unverifiable";
     return proof.identity === owner.processBirthId ? "alive" : "dead";
 }
+/** Construction time recognizes our runtime shape; it cannot prove process birth. */
+export function getTelegramBusHistoricalRuntimeAbsence(instanceId, options = {}) {
+    const match = /^([1-9]\d*):([1-9]\d*)$/u.exec(instanceId);
+    if (!match || match[0] !== instanceId || !match.slice(1).every((value) => Number.isSafeInteger(Number(value)))) {
+        return "unverifiable";
+    }
+    try {
+        return (options.isProcessAlive ?? isProcessAlive)(Number(match[1])) === false
+            ? "dead" : "unverifiable";
+    }
+    catch {
+        return "unverifiable";
+    }
+}
 export function getTelegramProcessBirthIdentityLiveness(processBirthId, options = {}) {
     const match = /^(\d+):(start|generation):(.+)$/u.exec(processBirthId);
     if (!match)
@@ -1432,7 +1446,7 @@ export function createTelegramBusFollowerRegistry() {
         },
         observeUnregistered: (follower) => {
             // This watches replacement, not process death or delivery authority.
-            const observation = { follower: clone(follower), current: ![...followers.values()]
+            const observation = { follower: { ...follower, target: follower.target ? { ...follower.target } : undefined }, current: ![...followers.values()]
                     .some((current) => hasTelegramBusFollowerIdentityOverlap(current, follower)) };
             if (observation.current)
                 observations.add(observation);

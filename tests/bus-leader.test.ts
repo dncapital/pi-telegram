@@ -6001,6 +6001,372 @@ test("Preserved dead followers become inactive durably and rotate only under pro
   }
 });
 
+async function createHistoricalCapacityFixture(sharedOperations = true) {
+  const dir = mkdtempSync(join(tmpdir(), "pi-telegram-historical-safety-"));
+  const path = join(dir, "state.json"), socketPath = join(dir, "bus.sock");
+  const registry = createTelegramBusFollowerRegistry();
+  const controls = { epoch: 1, profile: undefined as string | undefined, now: 1000,
+    runtimeAlive: false, parentAlive: false, probeError: false, birthUnavailable: false,
+    parentBirth: "old", failStart: false, protected: true, deliveryProtected: false,
+    atCommit: undefined as (() => void) | undefined };
+  const admission = createTelegramWorkspaceAdmissionLedger({ path: join(dir, "admission.json"),
+    profileKey: "default", owner: { processId: process.pid, processBirthId: `${process.pid}:test` },
+    getProcessLiveness: () => "alive" });
+  const operations = createTelegramWorkspaceOperationRuntime({ getWorkspaceAdmission: () => admission });
+  const ids: string[] = [], effects: string[] = [];
+  const store = createTelegramTopicTargetStore({ path, getNowMs: () => controls.now,
+    getExternalReservedSlots: admission.listReservedSlots,
+    commitPersist(commit) {
+      if (admission.read().leases.some((lease) => lease.operationKind === "workspace.reconcile-historical-owner")) {
+        assert.equal(effects.length, 0, "reconciliation has no Telegram effect");
+        controls.atCommit?.();
+      }
+      commit(); return true;
+    } });
+  for (let index = 0; index < 26; index++) {
+    const target = { chatId: 7, threadId: 100 + index }, slot = String.fromCharCode(65 + index);
+    store.upsert({ profileKey: index === 0 ? "manual:43:start:old" : `manual:opaque-${index}`,
+      instanceId: index === 0 ? "42:100" : `opaque-${index}`, target, slot,
+      status: "active", createdAtMs: 1, updatedAtMs: 1 });
+    store.upsertWorkspaceBinding({ ...createTelegramWorkspaceBindingIdentity(`/old/${index}`, 0, "session")!,
+      target, slot, updatedAtMs: 1, journalBindingKeys: [], journalBindingsComplete: true });
+  }
+  let allowedUserId: number | undefined;
+  const runtime = createTelegramBusLeaderRuntimeAssembly({
+    runtime: { socketPath, followerRegistry: registry, protocolIdentity: TEST_BUS_PROTOCOL_IDENTITY,
+      startPolling() { if (controls.failStart) throw new Error("start failed"); }, stopPolling() {} },
+    getAllowedUserId: () => allowedUserId, instanceId: "leader", topicTargetStore: store,
+    getCurrentLeaderEpoch: () => controls.epoch, getTelegramProfile: () => controls.profile,
+    getWorkspaceAdmission: () => admission,
+    runWorkspaceOperation: sharedOperations ? (input, action) => {
+      if (input.operationKind === "workspace.reconcile-historical-owner") ids.push(input.operationId);
+      return operations.run(input, action);
+    } : undefined,
+    processLivenessOptions: { platform: "linux", isProcessAlive(pid) {
+      if (controls.probeError) throw new Error("PID inaccessible");
+      return pid === 42 ? controls.runtimeAlive : controls.parentAlive;
+    }, readProcStat() {
+      if (controls.birthUnavailable) throw new Error("birth inaccessible");
+      return `(worker) S ${Array(18).fill("0").join(" ")} ${controls.parentBirth}`;
+    } },
+    captureWorkspaceExternalProtection: () => ({ liveOwner: "clear",
+      acceptedWork: controls.protected ? "protected" : "clear",
+      deliveryAuthority: controls.deliveryProtected ? "protected" : "clear" }),
+    workspaceRotation: { getAdmission: () => admission, runExclusive: operations.runExclusive,
+      async deleteThread(authorize) { effects.push(`delete:${authorize().threadId}`); } },
+    async callApi<T>(method: string) {
+      effects.push(method); return (method === "createForumTopic" ? { message_thread_id: 1000 } : true) as T;
+    }, callMultipart: async () => true, downloadFile: async () => undefined,
+    getSyncState: () => ({}), setSyncState() {}, setLeaderTarget() {}, recordRuntimeEvent() {},
+  });
+  await store.persist();
+  await runtime.startPolling("ctx");
+  allowedUserId = 7;
+  let request = 0;
+  const register = (kind: "follower.register" | "follower.restoreWorkspace" = "follower.register") => {
+    const generation = `fresh:${++request}`;
+    return sendTelegramBusLocalEnvelope({ socketPath, envelope: { kind, requestId: generation,
+      registration: { instanceId: "fresh", cwd: "/fresh", sessionId: "fresh-session", connectedAtMs: 1000,
+        registrationGeneration: generation, protocol: TEST_BUS_PROTOCOL_IDENTITY } } });
+  };
+  return { controls, registry, admission, store, runtime, ids, effects, register, path,
+    disableProvisioning() { allowedUserId = undefined; },
+    async close() { controls.atCommit = undefined; await runtime.stopPolling(); rmSync(dir, { recursive: true, force: true }); } };
+}
+
+test("Historical owner proof fails closed for live, reused, opaque and unverifiable processes", async (t) => {
+  for (const proof of ["runtime-live", "runtime-reused", "parent-live", "parent-unverifiable", "probe-error",
+    "runtime-opaque", "parent-opaque", "parent-reused", "registered-instance", "registered-profile", "registered-target"] as const) {
+    await t.test(proof, async () => {
+      const f = await createHistoricalCapacityFixture();
+      try {
+        const record = f.store.list()[0]!;
+        if (proof.startsWith("registered-")) f.registry.register({
+          instanceId: proof === "registered-instance" ? record.instanceId! : "live",
+          profileKey: proof === "registered-profile" ? record.profileKey : "manual:live",
+          target: proof === "registered-target" ? record.target : { chatId: 7, threadId: 200 },
+          connectedAtMs: 1000, registrationGeneration: "live:1",
+        });
+        if (proof.startsWith("runtime-")) f.controls.runtimeAlive = proof !== "runtime-opaque";
+        if (proof.startsWith("parent-") && proof !== "parent-opaque") f.controls.parentAlive = true;
+        if (proof === "runtime-reused" || proof === "parent-reused") f.controls.parentBirth = "new";
+        if (proof === "parent-unverifiable") f.controls.birthUnavailable = true;
+        if (proof === "probe-error") f.controls.probeError = true;
+        if (proof === "runtime-opaque") f.store.upsert({ ...record, instanceId: "opaque" });
+        if (proof === "parent-opaque") f.store.upsert({ ...record,
+          owner: { kind: "manual-follower", instanceId: "opaque" }, profileKey: "manual:opaque" });
+        await f.store.persist();
+        const ack = await f.register();
+        assert.equal(ack?.kind === "bus.ack" && ack.ok, false);
+        assert.equal(f.store.listWorkspaceBindings()[0]?.inactiveSinceMs, proof === "parent-reused" ? 1000 : undefined);
+        assert.equal(f.store.list().length, proof === "parent-reused" ? 25 : 26);
+        assert.deepEqual(f.effects, []);
+        assert.deepEqual(f.admission.read().leases, []);
+      } finally { await f.close(); }
+    });
+  }
+});
+
+test("Historical owner detachment fences replacement, lifecycle and liveness at publication", async (t) => {
+  for (const race of ["instance", "profile-key", "target", "replacement-removed", "clear", "epoch", "profile",
+    "runtime-revived", "parent-revived", "stop", "failed-start"] as const) {
+    await t.test(race, async () => {
+      const f = await createHistoricalCapacityFixture();
+      let shutdown: Promise<void> | undefined;
+      try {
+        f.controls.atCommit = () => {
+          f.controls.atCommit = undefined;
+          if (["instance", "profile-key", "target", "replacement-removed"].includes(race)) {
+            const replacement = f.registry.register({ instanceId: race === "instance" ? "42:100" : "replacement",
+              profileKey: race === "profile-key" ? "manual:43:start:old" : "manual:replacement",
+              target: { chatId: 7, threadId: race === "target" || race === "replacement-removed" ? 100 : 200 },
+              connectedAtMs: 1000, registrationGeneration: "replacement:1" });
+            if (race === "replacement-removed") f.registry.remove(replacement.instanceId);
+          }
+          if (race === "clear") f.registry.clear();
+          if (race === "epoch") f.controls.epoch++;
+          if (race === "profile") f.controls.profile = "work";
+          if (race === "runtime-revived") f.controls.runtimeAlive = true;
+          if (race === "parent-revived") f.controls.parentAlive = true;
+          if (race === "stop") shutdown = f.runtime.stopPolling();
+          if (race === "failed-start") {
+            f.disableProvisioning();
+            f.controls.failStart = true;
+            shutdown = f.runtime.startPolling("replacement").then(() => assert.fail("start must fail"), () => undefined);
+          }
+        };
+        await f.register().catch(() => undefined);
+        await shutdown;
+        const disk = createTelegramTopicTargetStore({ path: f.path });
+        await disk.load();
+        assert.equal(disk.list()[0]?.instanceId, "42:100", race);
+        assert.equal(disk.listWorkspaceBindings()[0]?.inactiveSinceMs, undefined, race);
+        assert.deepEqual(f.effects, []);
+        assert.deepEqual(f.admission.read().leases, []);
+      } finally { await f.close(); }
+    });
+  }
+});
+
+test("Historical pressure rotates exactly one proven dead unprotected binding while delivery remains independent", async (t) => {
+  for (const deliveryProtected of [true, false]) {
+    await t.test(`delivery-protected:${deliveryProtected}`, async () => {
+      const f = await createHistoricalCapacityFixture();
+      try {
+        f.controls.protected = false;
+        f.controls.deliveryProtected = deliveryProtected;
+        const ack = await f.register();
+        assert.equal(ack?.kind === "bus.ack" && ack.ok, !deliveryProtected);
+        assert.equal(f.store.listWorkspaceBindings().length, 26);
+        assert.equal(f.store.list().length, deliveryProtected ? 25 : 26);
+        assert.equal(f.store.getWorkspaceBinding("/old/0", "a", "session")?.inactiveSinceMs,
+          deliveryProtected ? 1000 : undefined);
+        assert.deepEqual(f.effects.filter((effect) => effect.startsWith("delete:")), deliveryProtected ? [] : ["delete:100"]);
+        assert.ok(f.store.getWorkspaceBinding("/old/1", "a", "session"), "opaque owner remains protected");
+        assert.equal(f.store.getWorkspaceBinding("/fresh", "a", "fresh-session")?.slot,
+          deliveryProtected ? undefined : "A");
+        await waitForCondition(() => f.admission.read().leases.length === 0);
+        assert.deepEqual(f.admission.read().leases, []);
+      } finally { await f.close(); }
+    });
+  }
+});
+
+test("Historical reconciliation reuses admission after a lost acquisition ACK without leaking leases", async () => {
+  const f = await createHistoricalCapacityFixture();
+  try {
+    const acquire = f.admission.acquireAdmission;
+    let loseAck = true;
+    f.admission.acquireAdmission = (input) => {
+      const result = acquire(input);
+      if (input.operationKind === "workspace.reconcile-historical-owner" && loseAck) {
+        loseAck = false;
+        assert.equal(result.kind, "acquired");
+        throw new Error("admission ACK lost");
+      }
+      return result;
+    };
+    await f.register();
+    assert.equal(f.store.list().length, 26);
+    assert.equal(f.admission.read().leases.length, 1);
+    await f.register();
+    assert.equal(f.store.list().length, 25);
+    assert.equal(new Set(f.ids).size, 1);
+    assert.deepEqual(f.admission.read().leases, []);
+    assert.deepEqual(f.effects, []);
+  } finally { await f.close(); }
+});
+
+test("Historical detachment retries lost publication ACK with stable admission and first inactivity", async () => {
+  const f = await createHistoricalCapacityFixture();
+  try {
+    f.controls.atCommit = () => { f.controls.atCommit = undefined; throw new Error("write failed"); };
+    assert.equal((await f.register())?.kind, "bus.ack");
+    assert.equal(f.store.listWorkspaceBindings()[0]?.inactiveSinceMs, undefined);
+    f.controls.now = 2000;
+    const original = f.store.detachTargetOwner;
+    let lostAck = true;
+    f.store.detachTargetOwner = async (...args) => {
+      const result = await original(...args);
+      if (result && lostAck) { lostAck = false; throw new Error("commit ACK lost"); }
+      return result;
+    };
+    await f.register();
+    assert.equal(f.store.listWorkspaceBindings()[0]?.inactiveSinceMs, 2000);
+    f.controls.now = 3000;
+    await f.register();
+    assert.equal(f.store.listWorkspaceBindings()[0]?.inactiveSinceMs, 2000);
+    assert.equal(new Set(f.ids).size, 1);
+    assert.equal(f.store.list().length, 25);
+    assert.deepEqual(f.admission.read().leases, []);
+    assert.deepEqual(f.effects, []);
+  } finally { await f.close(); }
+});
+
+test("Historical reconciliation requires composition's shared admitted Workspace runner", async () => {
+  const f = await createHistoricalCapacityFixture(false);
+  try {
+    await f.register();
+    assert.equal(f.store.list().length, 26);
+    assert.ok(f.store.listWorkspaceBindings().every((binding) => binding.inactiveSinceMs === undefined));
+    assert.deepEqual(f.effects, []);
+    assert.deepEqual(f.admission.read().leases, []);
+  } finally { await f.close(); }
+});
+
+test("Restore-only historical capacity and a retained fence never initiate reconciliation", async () => {
+  const f = await createHistoricalCapacityFixture();
+  try {
+    await f.register("follower.restoreWorkspace");
+    assert.deepEqual(f.ids, []);
+    assert.equal(f.store.list().length, 26);
+    assert.ok(f.store.listWorkspaceBindings().every((binding) => binding.inactiveSinceMs === undefined));
+    assert.equal(f.admission.acquireRetirementFence({ operationId: "retained",
+      retirementIntentId: "retained", bindingKey: "retained", slot: "Z", target: { chatId: 7, threadId: 999 },
+      leaderEpoch: 1, retirementRequestedAtMs: 1 }).kind, "acquired");
+    await f.register();
+    assert.deepEqual(f.ids, []);
+    assert.equal(f.store.list().length, 26);
+    assert.deepEqual(f.effects, []);
+    assert.deepEqual(f.admission.read().leases, []);
+  } finally { await f.close(); }
+});
+
+test("Historical owner capacity after leader restart reconciles without losing protected work", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "pi-telegram-preserved-pressure-"));
+  const path = join(dir, "state.json");
+  const socketPath = join(dir, "bus.sock");
+  const registry = createTelegramBusFollowerRegistry();
+  const admission = createTelegramWorkspaceAdmissionLedger({
+    path: join(dir, "admission.json"), profileKey: "default",
+    owner: { processId: process.pid, processBirthId: `${process.pid}:preserved` },
+    getProcessLiveness: () => "alive",
+  });
+  const operations = createTelegramWorkspaceOperationRuntime({ getWorkspaceAdmission: () => admission });
+  let verifyDetachment = false;
+  const store = createTelegramTopicTargetStore({ path, getNowMs: () => 1000,
+    getExternalReservedSlots: admission.listReservedSlots,
+    commitPersist(commit) {
+      if (admission.read().leases.some((lease) => lease.operationKind === "workspace.reconcile-historical-owner")) {
+        verifyDetachment = true;
+        assert.equal(effects.length, 0, "historical detachment cannot issue Telegram requests");
+        assert.equal(store.listWorkspaceBindings().length, 26);
+      }
+      commit();
+      return true;
+    },
+  });
+  for (let index = 0; index < 26; index++) {
+    const instanceId = `${2_000_000_000 + index}:100`;
+    const profileKey = `manual:${2_000_000_100 + index}:start:old`;
+    const target = { chatId: 7, threadId: 100 + index };
+    const slot = String.fromCharCode(65 + index);
+    store.upsert({ profileKey, instanceId, target, slot,
+      status: "active", createdAtMs: 1, updatedAtMs: 1 });
+    store.upsertWorkspaceBinding({
+      ...createTelegramWorkspaceBindingIdentity(`/old/${String(index).padStart(2, "0")}`, 0, "old-session")!,
+      target, slot, updatedAtMs: 1, journalBindingKeys: [], journalBindingsComplete: true,
+    });
+  }
+  const accepted = [{ update: { update_id: 1,
+    message: { chat: { id: 7 }, message_thread_id: 100 } } }];
+  const capture = createTelegramWorkspaceExternalProtectionCapture({
+    listFollowers: registry.list, getActiveTurnTarget: () => undefined, getQueuedItems: () => [],
+    resolveLeaderJournal: () => ({ journal: { read: () => ({ entries: accepted }) } }),
+    createFollowerJournalResolver: () => () => ({ journal: { read: () => ({ entries: [] }) } }),
+    getJournalWriterProtection: () => "clear", getDeliveryAuthorityProtection: () => "clear",
+  });
+  let allowedUserId: number | undefined;
+  const effects: string[] = [];
+  const errors: unknown[] = [];
+  const runtime = createTelegramBusLeaderRuntimeAssembly({
+    runtime: { socketPath, followerRegistry: registry, protocolIdentity: TEST_BUS_PROTOCOL_IDENTITY,
+      startPolling() {}, stopPolling() {}, getNowMs: () => 1000,
+      followerPruneIntervalMs: 5, followerStaleAfterMs: 100,
+      isFollowerProcessAlive: () => false, shouldCleanupConfirmedDeadFollower: () => false },
+    getAllowedUserId: () => allowedUserId, instanceId: "leader", topicTargetStore: store,
+    getCurrentLeaderEpoch: () => 1, getWorkspaceAdmission: () => admission,
+    runWorkspaceOperation: operations.run, captureWorkspaceExternalProtection: capture,
+    workspaceRotation: {
+      getAdmission: () => admission, runExclusive: operations.runExclusive,
+      async deleteThread(authorize) { effects.push(`delete:${authorize().threadId}`); },
+    },
+    async callApi<TResponse>(method: string, body: Record<string, unknown>) {
+      effects.push(`${method}:${body.message_thread_id ?? "new"}`);
+      return (method === "createForumTopic" ? { message_thread_id: 1000 } : true) as TResponse;
+    },
+    callMultipart: async () => true, downloadFile: async () => undefined,
+    getSyncState: () => ({}), setSyncState() {}, setLeaderTarget() {},
+    recordRuntimeEvent(_category, error) { if (error instanceof Error) errors.push(error); },
+  });
+  try {
+    await store.persist();
+    await runtime.startPolling("ctx");
+    assert.equal(store.list().length, 26);
+    assert.deepEqual(registry.list(), []);
+    assert.ok(store.listWorkspaceBindings().every((binding) => binding.inactiveSinceMs === undefined));
+    assert.equal(effects.length, 0, "restart must not sweep");
+    const restored = createTelegramTopicTargetStore({ path });
+    await restored.load();
+    assert.equal(restored.listWorkspaceBindings().length, 26);
+    assert.ok(restored.listWorkspaceBindings().every((binding) => binding.inactiveSinceMs === undefined));
+    assert.deepEqual(restored.listSyncObservations(), []);
+    assert.equal(capture(restored.listWorkspaceBindings()[0]!).acceptedWork, "protected");
+    allowedUserId = 7;
+    const registration = await sendTelegramBusLocalEnvelope({ socketPath, envelope: {
+      kind: "follower.register", requestId: "fresh:1", registration: {
+        instanceId: "fresh", cwd: "/fresh", sessionId: "fresh-session", connectedAtMs: 1000,
+        registrationGeneration: "fresh:1", protocol: TEST_BUS_PROTOCOL_IDENTITY,
+      },
+    } });
+    assert.equal(registration?.kind === "bus.ack" && registration.ok, true, JSON.stringify(registration));
+    assert.equal(verifyDetachment, true);
+    assert.equal(store.getWorkspaceBinding("/old/00", "a", "old-session")?.inactiveSinceMs, 1000);
+    assert.deepEqual(store.listSyncObservations(), []);
+    assert.equal(store.getWorkspaceBinding("/fresh", "a", "fresh-session")?.slot, "B");
+    assert.ok(store.getWorkspaceBinding("/old/00", "a", "old-session"), "accepted work still protects A");
+    assert.deepEqual(effects.filter((effect) => effect.startsWith("delete:")), ["delete:101"]);
+    const reopen = await sendTelegramBusLocalEnvelope({ socketPath, envelope: {
+      kind: "follower.restoreWorkspace", requestId: "restore:1", registration: {
+        instanceId: "reopen", cwd: "/old/02", sessionId: "old-session", connectedAtMs: 1000,
+        registrationGeneration: "reopen:1", protocol: TEST_BUS_PROTOCOL_IDENTITY,
+      },
+    } });
+    assert.equal(reopen?.kind === "bus.ack" && reopen.ok, true);
+    const rebound = store.getWorkspaceBinding("/old/02", "a", "old-session");
+    assert.equal(rebound?.target.threadId, 102);
+    assert.equal(rebound?.inactiveSinceMs, undefined);
+    assert.deepEqual(effects.filter((effect) => effect.startsWith("delete:")), ["delete:101"]);
+    assert.equal(effects.filter((effect) => effect.startsWith("createForumTopic:")).length, 1);
+    assert.equal(accepted.length, 1);
+    assert.deepEqual(errors, []);
+  } finally {
+    verifyDetachment = false;
+    await runtime.stopPolling();
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
 test("Preserved follower detachment rechecks external authority at commit and respects retirement admission", async () => {
   for (const race of ["replacement", "epoch", "profile", "revived", "stopped", "fenced"] as const) {
     const dir = mkdtempSync(join(tmpdir(), "pi-telegram-preserved-fence-"));

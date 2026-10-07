@@ -157,6 +157,23 @@ export function getTelegramProcessLiveness(
   return proof.identity === owner.processBirthId ? "alive" : "dead";
 }
 
+/** Construction time recognizes our runtime shape; it cannot prove process birth. */
+export function getTelegramBusHistoricalRuntimeAbsence(
+  instanceId: string,
+  options: Pick<TelegramProcessLivenessOptions, "isProcessAlive"> = {},
+): "dead" | "unverifiable" {
+  const match = /^([1-9]\d*):([1-9]\d*)$/u.exec(instanceId);
+  if (!match || match[0] !== instanceId || !match.slice(1).every((value) => Number.isSafeInteger(Number(value)))) {
+    return "unverifiable";
+  }
+  try {
+    return (options.isProcessAlive ?? isProcessAlive)(Number(match[1])) === false
+      ? "dead" : "unverifiable";
+  } catch {
+    return "unverifiable";
+  }
+}
+
 export function getTelegramProcessBirthIdentityLiveness(
   processBirthId: string,
   options: TelegramProcessLivenessOptions = {},
@@ -2201,7 +2218,7 @@ export interface TelegramBusFollowerRegistry {
   list: () => TelegramBusFollowerView[];
   remove: (instanceId: string) => boolean;
   clear: () => void;
-  observeUnregistered: (follower: TelegramBusFollowerView) => {
+  observeUnregistered: (follower: Pick<TelegramBusInstanceRegistration, "instanceId" | "profileKey" | "target">) => {
     isCurrent: () => boolean;
     release: () => void;
   };
@@ -2227,8 +2244,8 @@ export function createTelegramBusForwardOwnershipValidator(
 }
 
 function hasTelegramBusFollowerIdentityOverlap(
-  first: TelegramBusInstanceRegistration,
-  second: TelegramBusInstanceRegistration,
+  first: Pick<TelegramBusInstanceRegistration, "instanceId" | "profileKey" | "target">,
+  second: Pick<TelegramBusInstanceRegistration, "instanceId" | "profileKey" | "target">,
 ): boolean {
   return first.instanceId === second.instanceId ||
     (first.profileKey !== undefined && first.profileKey === second.profileKey) ||
@@ -2238,7 +2255,10 @@ function hasTelegramBusFollowerIdentityOverlap(
 
 export function createTelegramBusFollowerRegistry(): TelegramBusFollowerRegistry {
   const followers = new Map<string, TelegramBusFollowerView>();
-  const observations = new Set<{ follower: TelegramBusFollowerView; current: boolean }>();
+  const observations = new Set<{
+    follower: Pick<TelegramBusInstanceRegistration, "instanceId" | "profileKey" | "target">;
+    current: boolean;
+  }>();
   const clone = (
     follower: TelegramBusFollowerView,
   ): TelegramBusFollowerView => ({
@@ -2313,7 +2333,7 @@ export function createTelegramBusFollowerRegistry(): TelegramBusFollowerRegistry
     },
     observeUnregistered: (follower) => {
       // This watches replacement, not process death or delivery authority.
-      const observation = { follower: clone(follower), current: ![...followers.values()]
+      const observation = { follower: { ...follower, target: follower.target ? { ...follower.target } : undefined }, current: ![...followers.values()]
         .some((current) => hasTelegramBusFollowerIdentityOverlap(current, follower)) };
       if (observation.current) observations.add(observation);
       return {

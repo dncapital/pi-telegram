@@ -16,6 +16,49 @@ import { join } from "node:path";
 import test from "node:test";
 import { Worker } from "node:worker_threads";
 
+test("Historical runtime absence accepts only canonical identities and actual absence", () => {
+  for (const identity of ["42:100", "9007199254740991:9007199254740991"]) {
+    let probed: number | undefined;
+    assert.equal(getTelegramBusHistoricalRuntimeAbsence(identity, {
+      isProcessAlive(pid) { probed = pid; return false; },
+    }), "dead");
+    assert.equal(probed, Number(identity.split(":")[0]));
+    assert.equal(getTelegramBusHistoricalRuntimeAbsence(identity, { isProcessAlive: () => true }), "unverifiable");
+    for (const code of ["EPERM", "ESRCH", "EIO"]) {
+      assert.equal(getTelegramBusHistoricalRuntimeAbsence(identity, {
+        isProcessAlive() { throw Object.assign(new Error("probe failed"), { code }); },
+      }), "unverifiable");
+    }
+  }
+  for (const identity of ["opaque", "42:start:100", "042:100", "42:0100", "0:100", "42:0",
+    "-42:100", "+42:100", "42:1.5", "42:1e3", "42:100:1", "42:100\n", "9007199254740992:100",
+    "42:9007199254740992", " 42:100"]) {
+    assert.equal(getTelegramBusHistoricalRuntimeAbsence(identity, {
+      isProcessAlive() { assert.fail(`must not probe opaque identity ${identity}`); },
+    }), "unverifiable", identity);
+  }
+  assert.equal(getTelegramBusHistoricalRuntimeAbsence(`${process.pid}:100`), "unverifiable");
+  assert.equal(getTelegramBusHistoricalRuntimeAbsence("2000000000:100"), "dead");
+});
+
+test("Historical registry observation survives no replacement, never replacement removal or clear", () => {
+  for (const overlap of ["instance", "profile", "target", "clear"] as const) {
+    const registry = createTelegramBusFollowerRegistry();
+    const observed = registry.observeUnregistered({ instanceId: "42:100", profileKey: "manual:43:start:1",
+      target: { chatId: 7, threadId: 10 } });
+    assert.equal(observed.isCurrent(), true);
+    if (overlap === "clear") registry.clear();
+    else {
+      const replacement = registry.register({ instanceId: overlap === "instance" ? "42:100" : "new",
+        profileKey: overlap === "profile" ? "manual:43:start:1" : "manual:new",
+        target: { chatId: 7, threadId: overlap === "target" ? 10 : 11 }, connectedAtMs: 1 });
+      registry.remove(replacement.instanceId);
+    }
+    assert.equal(observed.isCurrent(), false, overlap);
+    observed.release();
+  }
+});
+
 import {
   classifyTelegramBusTransportError,
   getTelegramBusFollowerEndpoint,
@@ -49,6 +92,7 @@ import {
   getTelegramBusSocketPath,
   getTelegramFollowerTargetOwnership,
   getTelegramProcessBirthIdentity,
+  getTelegramBusHistoricalRuntimeAbsence,
   getTelegramProcessBirthIdentityLiveness,
   getTelegramProcessLiveness,
   hasTelegramBusCapability,

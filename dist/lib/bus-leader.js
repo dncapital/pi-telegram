@@ -9,7 +9,7 @@ import { createTelegramThreadDisplayReconciler, resolveTelegramInitialWorkspaceD
 import * as ThreadReconciler from "./thread-reconciler.js";
 import { getTelegramApiErrorRequestTarget, isTelegramApiCommitUnknownError, } from "./telegram-api.js";
 import * as Threads from "./threads.js";
-import { createTelegramBusLocalServer, createUnauthorizedBusAck, getTelegramBusEnvelopeTrafficClass, getTelegramBusProtocolCompatibility, hasTelegramBusCapability, isTelegramBusEnvelopeAuthorized, getTelegramBusFollowerSocketPath, sendTelegramBusLocalEnvelope, stripTelegramBusApiMetadata, TELEGRAM_BUS_CAPABILITY_DURABLE_FOLLOWER_ADMISSION, TELEGRAM_BUS_CAPABILITY_QUEUE_HANDOFF, TELEGRAM_BUS_CAPABILITY_WORKSPACE_FOLLOWER_AUTO_CONNECT, TELEGRAM_BUS_CAPABILITY_WORKSPACE_THREAD_RENAME, TELEGRAM_BUS_CAPABILITY_THREAD_DISPLAY_MODE, TELEGRAM_BUS_CAPABILITY_DIRECTORY_DISPLAY_FORMAT, TELEGRAM_BUS_CAPABILITY_SESSION_REPLACEMENT_INTENT, } from "./bus.js";
+import { createTelegramBusLocalServer, getTelegramBusHistoricalRuntimeAbsence, getTelegramProcessBirthIdentityLiveness, createUnauthorizedBusAck, getTelegramBusEnvelopeTrafficClass, getTelegramBusProtocolCompatibility, hasTelegramBusCapability, isTelegramBusEnvelopeAuthorized, getTelegramBusFollowerSocketPath, sendTelegramBusLocalEnvelope, stripTelegramBusApiMetadata, TELEGRAM_BUS_CAPABILITY_DURABLE_FOLLOWER_ADMISSION, TELEGRAM_BUS_CAPABILITY_QUEUE_HANDOFF, TELEGRAM_BUS_CAPABILITY_WORKSPACE_FOLLOWER_AUTO_CONNECT, TELEGRAM_BUS_CAPABILITY_WORKSPACE_THREAD_RENAME, TELEGRAM_BUS_CAPABILITY_THREAD_DISPLAY_MODE, TELEGRAM_BUS_CAPABILITY_DIRECTORY_DISPLAY_FORMAT, TELEGRAM_BUS_CAPABILITY_SESSION_REPLACEMENT_INTENT, } from "./bus.js";
 import { getTelegramBusTransportRetryPolicy } from "./bus-transport.js";
 import { createTelegramWorkspaceOperationRuntime, createTelegramWorkspaceSlotRotation, } from "./workspace-retirement.js";
 import { createTelegramWorkspaceAdmissionOperationId, runWithTelegramWorkspaceAdmissionsAsync, } from "./workspace-admission.js";
@@ -126,9 +126,76 @@ export function createTelegramBusLeaderRuntimeAssembly(deps) {
                 });
             },
         }).run;
+    let lifecycleGeneration = 0;
+    let lifecycleActive = false;
+    let historicalOperationId;
+    const reconcileHistoricalOwners = async (allocationIsCurrent) => {
+        // Only the supplied operation runtime shares retirement's admission and gate.
+        if (!deps.runWorkspaceOperation)
+            return;
+        const generation = lifecycleGeneration;
+        const epoch = deps.getCurrentLeaderEpoch?.();
+        const profile = deps.getTelegramProfile?.();
+        const current = () => lifecycleActive && lifecycleGeneration === generation &&
+            epoch !== undefined && deps.getCurrentLeaderEpoch?.() === epoch &&
+            deps.getTelegramProfile?.() === profile && allocationIsCurrent();
+        if (!current())
+            throw new Error("Telegram historical owner reconciliation lost leader authority.");
+        const operationId = historicalOperationId ??= createTelegramWorkspaceAdmissionOperationId();
+        await runWorkspaceOperation({ operationId,
+            operationKind: "workspace.reconcile-historical-owner", scopes: [{ kind: "profile" }],
+        }, async () => {
+            if (!current())
+                return;
+            await deps.topicTargetStore.load();
+            if (!current())
+                return;
+            const records = deps.topicTargetStore.list().filter((record) => record.status === "active" && record.owner?.kind === "manual-follower" &&
+                record.instanceId && record.instanceId !== deps.instanceId).slice(0, TELEGRAM_WORKSPACE_SLOTS.length);
+            for (const record of records) {
+                if (!current())
+                    return;
+                const owner = record.owner;
+                if (owner.kind !== "manual-follower" || owner.telegramProfile !== profile)
+                    continue;
+                const binding = deps.topicTargetStore.listWorkspaceBindings().find((binding) => binding.target.chatId === record.target.chatId && binding.target.threadId === record.target.threadId);
+                if (!binding || !binding.slot || binding.slot !== record.slot)
+                    continue;
+                const observation = deps.runtime.followerRegistry.observeUnregistered({
+                    instanceId: record.instanceId, profileKey: record.profileKey, target: record.target,
+                });
+                const detached = () => {
+                    if (!current() || !observation.isCurrent())
+                        return false;
+                    const leaderTarget = deps.topicTargetStore.getActiveByInstanceId(deps.instanceId)?.target;
+                    if (leaderTarget?.chatId === record.target.chatId && leaderTarget.threadId === record.target.threadId)
+                        return false;
+                    try {
+                        return getTelegramBusHistoricalRuntimeAbsence(record.instanceId, deps.processLivenessOptions) === "dead" &&
+                            getTelegramProcessBirthIdentityLiveness(owner.instanceId, deps.processLivenessOptions) === "dead";
+                    }
+                    catch {
+                        return false;
+                    }
+                };
+                try {
+                    if (detached())
+                        await deps.topicTargetStore.detachTargetOwner(record, detached, binding);
+                }
+                finally {
+                    observation.release();
+                }
+            }
+        });
+        if (current() && historicalOperationId === operationId)
+            historicalOperationId = undefined;
+        if (!current())
+            throw new Error("Telegram historical owner reconciliation lost leader authority.");
+    };
     const runWithWorkspaceCapacity = deps.workspaceRotation && deps.captureWorkspaceExternalProtection &&
         deps.getCurrentLeaderEpoch ? createTelegramWorkspaceSlotRotation({
         ...deps.workspaceRotation, store: deps.topicTargetStore,
+        reconcileHistoricalOwners,
         getLeaderEpoch: deps.getCurrentLeaderEpoch,
         getExternalProtection: deps.captureWorkspaceExternalProtection,
         recordEvent(message, details) { deps.recordRuntimeEvent("bus", message, details); },
@@ -581,12 +648,20 @@ export function createTelegramBusLeaderRuntimeAssembly(deps) {
         resetThreadNameAdmitted,
         captureWorkspaceExternalProtection: deps.captureWorkspaceExternalProtection,
         async startPolling(ctx) {
+            const generation = ++lifecycleGeneration;
+            lifecycleActive = true;
+            historicalOperationId = undefined;
             if (display)
                 beginStartupDisplayStabilization();
             try {
                 await runtime.startPolling(ctx);
             }
             catch (error) {
+                if (lifecycleGeneration === generation) {
+                    lifecycleActive = false;
+                    lifecycleGeneration++;
+                    historicalOperationId = undefined;
+                }
                 cancelStartupDisplayStabilization();
                 throw error;
             }
@@ -594,6 +669,9 @@ export function createTelegramBusLeaderRuntimeAssembly(deps) {
                 armStartupDisplayReconciliation();
         },
         async stopPolling() {
+            lifecycleActive = false;
+            lifecycleGeneration++;
+            historicalOperationId = undefined;
             cancelStartupDisplayStabilization();
             await runtime.stopPolling();
         },

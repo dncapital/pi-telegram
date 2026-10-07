@@ -10,7 +10,7 @@ import * as ThreadReconciler from "./thread-reconciler.ts";
 import { type TelegramApiCallOptions } from "./telegram-api.ts";
 import type { TelegramTarget } from "./target.ts";
 import * as Threads from "./threads.ts";
-import { type TelegramBusEnvelope, type TelegramBusFollowerRegistry, type TelegramBusFollowerView, type TelegramBusFollowerDisconnectResult, type TelegramBusInstanceRegistration, type TelegramBusProtocolIdentity, type TelegramBusSocketPathSource } from "./bus.ts";
+import { type TelegramProcessLivenessOptions, type TelegramBusEnvelope, type TelegramBusFollowerRegistry, type TelegramBusFollowerView, type TelegramBusFollowerDisconnectResult, type TelegramBusInstanceRegistration, type TelegramBusProtocolIdentity, type TelegramBusSocketPathSource } from "./bus.ts";
 import type { TelegramQueueHandoffPayload } from "./queue.ts";
 import { type TelegramWorkspaceCapacityRunner, type TelegramWorkspaceSlotRotationPorts, type TelegramWorkspaceOperationRunner } from "./workspace-retirement.ts";
 import { type TelegramWorkspaceAdmissionLedger } from "./workspace-admission.ts";
@@ -134,6 +134,7 @@ export interface TelegramBusLeaderRuntimeAssemblyDeps<TContext> {
     getWorkspaceAdmission?: () => Pick<TelegramWorkspaceAdmissionLedger, "acquireAdmission" | "releaseAdmission"> | undefined;
     runWorkspaceOperation?: TelegramBusWorkspaceAdmissionRunner;
     workspaceRotation?: TelegramWorkspaceSlotRotationPorts;
+    processLivenessOptions?: TelegramProcessLivenessOptions;
 }
 export type TelegramBusFollowerSessionReplacementOperation = (follower: TelegramBusFollowerView, intent: Threads.TelegramSessionReplacementIntent, isCurrent: () => boolean) => Promise<boolean>;
 /**

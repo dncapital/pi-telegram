@@ -38,6 +38,8 @@ export declare function getTelegramProcessLiveness(owner: {
     processId: number;
     processBirthId: string;
 }, options?: TelegramProcessLivenessOptions): TelegramProcessLiveness;
+/** Construction time recognizes our runtime shape; it cannot prove process birth. */
+export declare function getTelegramBusHistoricalRuntimeAbsence(instanceId: string, options?: Pick<TelegramProcessLivenessOptions, "isProcessAlive">): "dead" | "unverifiable";
 export declare function getTelegramProcessBirthIdentityLiveness(processBirthId: string, options?: TelegramProcessLivenessOptions): TelegramProcessLiveness;
 export declare function createCurrentTelegramBusProcessRuntime(input: {
     getActiveProfileName: () => string | undefined;
@@ -540,7 +542,7 @@ export interface TelegramBusFollowerRegistry {
     list: () => TelegramBusFollowerView[];
     remove: (instanceId: string) => boolean;
     clear: () => void;
-    observeUnregistered: (follower: TelegramBusFollowerView) => {
+    observeUnregistered: (follower: Pick<TelegramBusInstanceRegistration, "instanceId" | "profileKey" | "target">) => {
         isCurrent: () => boolean;
         release: () => void;
     };

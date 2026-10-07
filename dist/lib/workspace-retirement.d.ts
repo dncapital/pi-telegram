@@ -278,6 +278,7 @@ export type TelegramWorkspaceCapacityRunner = <T>(operation: () => Promise<T>) =
 export interface TelegramWorkspaceSlotRotationPorts extends TelegramWorkspaceOperationGate {
     getAdmission: () => TelegramWorkspaceAdmissionLedger | undefined;
     deleteThread: TelegramWorkspaceThreadDeletionTransport;
+    reconcileHistoricalOwners?: (isCurrent: () => boolean) => Promise<void>;
     reclaimDeadOwnerQueuedWork?: (binding: TelegramWorkspaceThreadBinding, isCurrent: () => boolean) => Promise<TelegramWorkspaceDeadQueueReclamation>;
 }
 /** Retry allocation once, only after the failed operation released all ordinary leases. */
