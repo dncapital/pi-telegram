@@ -47,6 +47,44 @@ import {
   type TelegramUpdateJournalEntry,
 } from "../lib/journal.ts";
 
+test("Historical reconciliation runs only after typed fresh failure outside the ordinary gate and leases", async () => {
+  const root = await mkdtemp(join(tmpdir(), "telegram-historical-order-"));
+  try {
+    const store = createTelegramTopicTargetStore({ path: join(root, "state.json") });
+    const admission = createRetirementAdmission(join(root, "admission.json"));
+    const operations = createTelegramWorkspaceOperationRuntime({ getWorkspaceAdmission: () => admission });
+    const events: string[] = [];
+    const capacity = createTelegramWorkspaceSlotRotation({ store, getAdmission: () => admission,
+      getLeaderEpoch: () => 1, getExternalProtection: clearExternalProtection,
+      runExclusive: operations.runExclusive, recordEvent() {},
+      async deleteThread() { assert.fail("empty capacity must not delete"); },
+      async reconcileHistoricalOwners(isCurrent) {
+        assert.equal(isCurrent(), true);
+        assert.deepEqual(admission.read().leases, []);
+        events.push("reconcile");
+        await operations.run({ operationId: "reconcile", operationKind: "historical",
+          scopes: [{ kind: "profile" }] }, async () => {
+          assert.equal(admission.read().leases.length, 1);
+          events.push("admitted-gate");
+        });
+      },
+      async reclaimDeadOwnerQueuedWork() { assert.fail("no queued candidate"); },
+    });
+    assert.equal(await capacity(async () => "ordinary success"), "ordinary success");
+    await assert.rejects(capacity(async () => { throw new Error("unrelated failure"); }), /unrelated/);
+    assert.equal(events.length, 0);
+    let attempts = 0;
+    assert.equal(await capacity(() => operations.run({ operationId: "allocate", operationKind: "allocate",
+      scopes: [{ kind: "profile" }] }, async () => {
+      events.push(`allocation:${++attempts}`);
+      if (attempts === 1) throw new TelegramWorkspaceSlotUnavailableError();
+      return "retry";
+    })), "retry");
+    assert.deepEqual(events, ["allocation:1", "reconcile", "admitted-gate", "allocation:2"]);
+    assert.deepEqual(admission.read().leases, []);
+  } finally { await rm(root, { recursive: true, force: true }); }
+});
+
 const clearExternalProtection = () => ({
   liveOwner: "clear" as const,
   acceptedWork: "clear" as const,

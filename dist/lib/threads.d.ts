@@ -219,7 +219,7 @@ export interface TelegramTopicTargetStore {
     persist: () => Promise<void>;
     invalidateTarget: (target: TelegramTarget, isCurrent: () => boolean, lastSyncError: string) => Promise<boolean>;
     /** Caller proves owner detachment; this does not assert Telegram Thread absence. */
-    detachTargetOwner: (expected: TelegramTopicTargetRecord, isCurrent: () => boolean) => Promise<boolean>;
+    detachTargetOwner: (expected: TelegramTopicTargetRecord, isCurrent: () => boolean, expectedBinding?: TelegramWorkspaceThreadBinding) => Promise<boolean>;
     list: () => TelegramTopicTargetRecord[];
     getFollowerRecoveryHintByTarget?: (target: TelegramTarget) => {
         slot?: string;

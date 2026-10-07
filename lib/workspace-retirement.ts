@@ -1339,6 +1339,7 @@ export type TelegramWorkspaceCapacityRunner = <T>(operation: () => Promise<T>) =
 export interface TelegramWorkspaceSlotRotationPorts extends TelegramWorkspaceOperationGate {
   getAdmission: () => TelegramWorkspaceAdmissionLedger | undefined;
   deleteThread: TelegramWorkspaceThreadDeletionTransport;
+  reconcileHistoricalOwners?: (isCurrent: () => boolean) => Promise<void>;
   reclaimDeadOwnerQueuedWork?: (
     binding: TelegramWorkspaceThreadBinding,
     isCurrent: () => boolean,
@@ -1417,6 +1418,8 @@ export function createTelegramWorkspaceSlotRotation(input: TelegramWorkspaceSlot
       try { return await operation(); }
       catch (error) {
         if (!(error instanceof TelegramWorkspaceSlotUnavailableError)) throw error;
+        await input.reconcileHistoricalOwners?.(isCurrent);
+        if (!isCurrent()) throw new Error("Telegram Workspace reconciliation lost leader authority.");
         if (input.reclaimDeadOwnerQueuedWork) {
           const candidates = await input.runExclusive(async () => {
             await input.store.load();

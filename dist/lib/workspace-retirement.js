@@ -957,6 +957,9 @@ export function createTelegramWorkspaceSlotRotation(input) {
             catch (error) {
                 if (!(error instanceof TelegramWorkspaceSlotUnavailableError))
                     throw error;
+                await input.reconcileHistoricalOwners?.(isCurrent);
+                if (!isCurrent())
+                    throw new Error("Telegram Workspace reconciliation lost leader authority.");
                 if (input.reclaimDeadOwnerQueuedWork) {
                     const candidates = await input.runExclusive(async () => {
                         await input.store.load();

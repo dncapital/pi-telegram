@@ -4,6 +4,8 @@
 
 ## Unreleased
 
+- `Historical Workspace capacity`: Fresh connections can reconcile retained manual-follower owners after leader restart when both runtime and parent-owner death are proven. Exact admitted detachment retains the Thread, binding, letter, and journals and records current inactivity. Existing work and delivery protections still block pressure rotation. Opaque identities and restore-only startup remain protected.
+
 ## 0.52.0: Confirmed follower Telegram quit
 
 - `Confirmed follower quit`: Registered `/quit` for the invoking Pi's active follower Thread. Exact actor/Thread/message/token confirmation waits for durable command and callback completion, then closes source forwarding, deletes through the authenticated leader, and invokes public Pi shutdown only after exact deletion plus fresh idle/disconnected evidence. Busy-after-delete stays running without retry; shared-owner quit remains unsupported.

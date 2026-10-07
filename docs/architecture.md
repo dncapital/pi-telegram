@@ -94,6 +94,10 @@ The repository uses a **Flat Domain DAG**:
 - `bindings` / `lifecycle` / `prompts` / `prompt-templates` / `pi`: Pi-facing command/tool/hook registration and cohesive cross-domain binding assembly, including queue mutation/dispatch/watchdog composition over admission and transport ports; session-generation fencing and start/shutdown sequencing across Queue, grouped input, Delivery, polling, capability monitor, follower refresh, and assistant-output projection; Telegram prompt guidance; prompt-template discovery/expansion; and centralized direct Pi SDK imports.
 - `command-templates`: shell-free command-template helpers, composition expansion, placeholder substitution, executable resolution, warnings, and retry/timeout semantics.
 
+### Historical Workspace capacity recovery
+
+`bus` owns canonical runtime-ID recognition and PID-absence proof. `bus-leader` reconciles historical manual owners under fresh profile admission and exact lifecycle, registry, and ownership fences. `threads` guards the exact non-destructive detachment CAS against binding drift and pending mutations. `workspace-retirement` invokes reconciliation only after a typed fresh capacity failure, outside ordinary allocation leases and before existing pressure recovery. See [historical owner reconciliation](./multi-instance-bus.md#historical-owner-reconciliation-under-capacity-pressure) for proof and preservation boundaries.
+
 ### Host Compatibility Boundary
 
 Pi is the primary and only officially supported host. `pi-telegram` may still accept narrow, host-neutral representation differences at its existing Pi-facing boundary when they preserve native Pi behavior and do not create a second runtime policy layer:

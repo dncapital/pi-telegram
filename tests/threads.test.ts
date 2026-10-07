@@ -55,6 +55,93 @@ import {
   TelegramApiCommitUnknownError,
 } from "../lib/telegram-api.ts";
 
+test("Historical detachment requires exact binding and excludes every pending mutation through commit", async (t) => {
+  for (const stage of ["before", "commit"] as const) {
+    for (const conflict of ["reservation-target", "reservation-slot", "provision-target", "provision-owner",
+      "cleanup", "retirement", "claim", "binding-target", "binding-slot", "binding-display", "other-record"] as const) {
+      await t.test(`${stage}:${conflict}`, async () => {
+        const root = await mkdtemp(join(tmpdir(), "telegram-historical-detach-"));
+        const path = join(root, "state.json");
+        let atCommit: (() => void) | undefined;
+        const store = createTelegramTopicTargetStore({ path, getNowMs: () => 1000,
+          commitPersist(commit) { atCommit?.(); commit(); return true; } });
+        try {
+          const target = { chatId: 7, threadId: 10 };
+          store.upsert({ profileKey: "manual:43:start:1", instanceId: "42:100", target, slot: "A",
+            status: "active", createdAtMs: 1, updatedAtMs: 1 });
+          store.upsertWorkspaceBinding({ ...createTelegramWorkspaceBindingIdentity("/old", 0, "session")!,
+            target, slot: "A", updatedAtMs: 1,
+            ...(conflict === "retirement" ? { inactiveSinceMs: 1 } : {}) });
+          await store.persist();
+          const record = store.list()[0]!, binding = store.listWorkspaceBindings()[0]!;
+          const mutate = () => {
+            switch (conflict) {
+              case "reservation-target": case "reservation-slot":
+                store.reserveThread({ target: conflict === "reservation-target" ? target : { chatId: 7, threadId: 11 },
+                  slot: conflict === "reservation-slot" ? "A" : "B", reason: "pending", createdAtMs: 1, updatedAtMs: 1 }); break;
+              case "provision-target": case "provision-owner":
+                store.upsertPendingProvision({ id: "pending", owner: "manual-follower",
+                  instanceId: conflict === "provision-owner" ? record.instanceId! : "other",
+                  ...(conflict === "provision-target" ? { target } : { profileKey: record.profileKey }),
+                  startedAtMs: 1, expiresAtMs: 2000 }); break;
+              case "cleanup":
+                store.upsertPendingCleanup({ id: "cleanup", owner: "manual-follower", instanceId: "other",
+                  target, runtimeGeneration: "other:1", requestedAtMs: 1 }); break;
+              case "retirement":
+                assert.equal(store.upsertWorkspaceRetirementIntent({ id: "retire", reason: "pressure",
+                  profileKey: "default", binding, leaderEpoch: 1, requestedAtMs: 1 }), true); break;
+              case "claim":
+                assert.ok(store.claimWorkspaceIdentity("/old", record.instanceId!, undefined,
+                  { existingBindingOnly: true, sessionId: "session" })); break;
+              case "binding-target": case "binding-slot": case "binding-display":
+                assert.ok(store.upsertWorkspaceBinding({ ...binding,
+                  ...(conflict === "binding-target" ? { target: { chatId: 7, threadId: 11 } } :
+                    conflict === "binding-slot" ? { slot: "B" } : { displayTitle: "Changed" }) })); break;
+              case "other-record":
+                store.upsert({ ...record, profileKey: "manual:other", owner: { kind: "manual-follower", instanceId: "other" },
+                  instanceId: "other", target: { chatId: 7, threadId: 11 } }); break;
+            }
+          };
+          if (stage === "before") { mutate(); await store.persist(); }
+          else atCommit = mutate;
+          assert.equal(await store.detachTargetOwner(record, () => true, binding), false);
+          assert.ok(store.list().some((owner) => owner.instanceId === "42:100"));
+          assert.ok(store.listWorkspaceBindings().every((entry) => entry.inactiveSinceMs ===
+            (conflict === "retirement" ? 1 : undefined)));
+          const disk = createTelegramTopicTargetStore({ path });
+          await disk.load();
+          assert.ok(disk.list().some((owner) => owner.instanceId === "42:100"));
+          assert.ok(disk.listWorkspaceBindings().every((entry) => entry.inactiveSinceMs ===
+            (conflict === "retirement" ? 1 : undefined)));
+        } finally { await rm(root, { recursive: true, force: true }); }
+      });
+    }
+  }
+});
+
+test("Historical detachment preserves an exact pending session replacement", async () => {
+  const root = await mkdtemp(join(tmpdir(), "telegram-historical-session-"));
+  const path = join(root, "state.json");
+  try {
+    const store = createTelegramTopicTargetStore({ path, getNowMs: () => 1000 });
+    const target = { chatId: 7, threadId: 10 };
+    store.upsert({ profileKey: "manual:43:start:1", instanceId: "42:100", target, slot: "A",
+      status: "active", createdAtMs: 1, updatedAtMs: 1 });
+    store.upsertWorkspaceBinding({ ...createTelegramWorkspaceBindingIdentity("/old", 0, "session")!,
+      target, slot: "A", updatedAtMs: 1 });
+    await store.persist();
+    const record = store.list()[0]!, binding = store.listWorkspaceBindings()[0]!;
+    const intent = { continuity: "workspace-thread" as const, sourceUpdateId: 1, messageId: 1, profileName: "default",
+      cwd: "/old", sourceSessionId: "session", sourceInstanceId: "42:100", target, slot: "A", threadName: "Anchor",
+      createdAtMs: 1000, expiresAtMs: 2000 };
+    assert.equal(await store.commitSessionReplacementIntent(intent, () => true), true);
+    assert.equal(await store.detachTargetOwner(record, () => true, binding), false);
+    assert.deepEqual(store.getSessionReplacementIntent(), intent);
+    assert.equal(store.list()[0]?.instanceId, "42:100");
+    assert.equal(store.listWorkspaceBindings()[0]?.inactiveSinceMs, undefined);
+  } finally { await rm(root, { recursive: true, force: true }); }
+});
+
 test("Stale-target invalidation fences the durable commit and preserves a replacement binding", async () => {
   for (const race of ["none", "generation", "binding", "ownership"] as const) {
     const root = await mkdtemp(join(tmpdir(), "telegram-invalidation-"));

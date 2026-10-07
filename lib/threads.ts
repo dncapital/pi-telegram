@@ -469,6 +469,7 @@ export interface TelegramTopicTargetStore {
   detachTargetOwner: (
     expected: TelegramTopicTargetRecord,
     isCurrent: () => boolean,
+    expectedBinding?: TelegramWorkspaceThreadBinding,
   ) => Promise<boolean>;
   list: () => TelegramTopicTargetRecord[];
   getFollowerRecoveryHintByTarget?: (
@@ -2141,8 +2142,28 @@ export function createTelegramTopicTargetStore(
     isCurrent: () => boolean;
   } & (
     | { kind: "invalidate"; lastSyncError: string }
-    | { kind: "detach"; owner: TelegramTopicTargetRecord }
+    | { kind: "detach"; owner: TelegramTopicTargetRecord; expectedBinding?: TelegramWorkspaceThreadBinding }
   )): Promise<boolean> => {
+      const historicalBindingIsCurrent = () => {
+        if (transition?.kind !== "detach" || !transition.expectedBinding) return true;
+        const binding = transition.expectedBinding;
+        const matches = (candidate: { target?: TelegramTarget; slot?: string; instanceId?: string; profileKey?: string }) =>
+          (candidate.target !== undefined && targetMatches(candidate.target, binding.target)) ||
+          candidate.slot === binding.slot || candidate.instanceId === transition.owner.instanceId ||
+          candidate.profileKey === transition.owner.profileKey;
+        return !workspaceRetirementCommitInFlight &&
+          isDeepStrictEqual(workspaceBindings.get(getWorkspaceBindingMapKey(binding)), binding) &&
+          Array.from(workspaceBindings.values()).filter((candidate) =>
+            targetMatches(candidate.target, binding.target) || candidate.slot === binding.slot).length === 1 &&
+          !Array.from(records.values()).some((record) =>
+            getRecordOwnerKey(record) !== getRecordOwnerKey(transition.owner) && matches(record)) &&
+          !Array.from(workspaceClaims.values()).some((claim) =>
+            claim.identity.bindingKey === binding.bindingKey || matches(claim.identity)) &&
+          !reservations.some(matches) && !pendingProvisions.some(matches) &&
+          !pendingCleanups.some(matches) && !workspaceRetirements.some((intent) =>
+            intent.binding.bindingKey === binding.bindingKey || matches(intent.binding)) &&
+          !(sessionReplacement && matches(sessionReplacement));
+      };
       const persist = persistQueue.then(async () => {
         const path = getPath();
         if (loadedPath !== path && !dirty) resetForPath(path);
@@ -2151,7 +2172,7 @@ export function createTelegramTopicTargetStore(
           return false;
         }
         if (!dirty || !loaded) await loadFromDisk();
-        if (transition && !transition.isCurrent()) return false;
+        if (transition && (!transition.isCurrent() || !historicalBindingIsCurrent())) return false;
         const nowMs = getNowMs();
         reservations = reservations.filter(
           (reservation) =>
@@ -2271,7 +2292,8 @@ export function createTelegramTopicTargetStore(
             let applied = false;
             const commit = () => {
               if (getPath() !== path || mutationRevision !== persistedRevision ||
-                statusRevision !== persistedStatusRevision || !transition.isCurrent()) return;
+                statusRevision !== persistedStatusRevision || !transition.isCurrent() ||
+                !historicalBindingIsCurrent()) return;
               // Fence and rename share one synchronous commit boundary. No stale
               // transition enters the live projection before durable commit.
               renameSync(tempPath, path);
@@ -2334,10 +2356,13 @@ export function createTelegramTopicTargetStore(
     invalidateTarget(target, isCurrent, lastSyncError) {
       return persistSnapshot({ kind: "invalidate", target, isCurrent, lastSyncError });
     },
-    detachTargetOwner(expected, isCurrent) {
+    detachTargetOwner(expected, isCurrent, expectedBinding) {
       const owner = normalizeRecord(expected);
-      if (!owner) return Promise.resolve(false);
-      return persistSnapshot({ kind: "detach", owner, target: owner.target, isCurrent });
+      const binding = expectedBinding ? normalizeWorkspaceBindingRecord(expectedBinding) : undefined;
+      if (!owner || (expectedBinding && (!binding || !binding.slot ||
+          binding.slot !== owner.slot || !targetMatches(binding.target, owner.target)))) return Promise.resolve(false);
+      return persistSnapshot({ kind: "detach", owner, target: owner.target, isCurrent,
+        ...(binding ? { expectedBinding: binding } : {}) });
     },
     list() {
       return Array.from(records.values()).map(cloneRecord);
